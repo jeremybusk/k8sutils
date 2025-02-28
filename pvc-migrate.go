@@ -91,20 +91,18 @@ func main() {
         waitForPodSuccess(dstPod, *namespace)
 
         // cleanup
+        log.Printf("Sleep 20 before round 1 clean-up.")
         time.Sleep(20 * time.Second)
-        // printPodLogs(clientset, srcPod, *namespace)
-        exec.Command("kubectl", "describe", "pod", srcPod, "-n", *namespace).Run()
-        exec.Command("kubectl", "logs", srcPod, "-n", *namespace).Run()
-        exec.Command("kubectl", "delete", "pod", srcPod, "-n", *namespace).Run()
-        log.Printf("Deleted data copy pod %s", srcPod)
-        // printPodLogs(clientset, dstPod, *namespace)
-        exec.Command("kubectl", "describe", "pod", dstPod, "-n", *namespace).Run()
-        exec.Command("kubectl", "logs", dstPod, "-n", *namespace).Run()
+        getPodLogs(clientset, dstPod, *namespace)
         exec.Command("kubectl", "delete", "pod", dstPod, "-n", *namespace).Run()
         log.Printf("Deleted data copy pod %s", dstPod)
+        getPodLogs(clientset, srcPod, *namespace)
+        exec.Command("kubectl", "delete", "pod", srcPod, "-n", *namespace).Run()
+        log.Printf("Deleted data copy pod %s", srcPod)
         deletePVC(clientset, *oldPVC, *namespace)
         createPVC(clientset, *oldPVC, int64(*newSizeGi), *newStorageClass, *namespace)
 
+        time.Sleep(20 * time.Second)
         startSourcePod(tmpPVC, *namespace, srcPod, *sshPort, username, password)
         waitForPodRunning(srcPod, *namespace)
 
@@ -112,11 +110,14 @@ func main() {
         waitForPodSuccess(dstPod, *namespace)
 
         // cleanup
+        log.Printf("Sleep 20 before round 2 clean-up.")
         time.Sleep(20 * time.Second)
-        exec.Command("kubectl", "delete", "pod", srcPod, "-n", *namespace).Run()
-        log.Printf("Deleted data copy pod %s", srcPod)
+        getPodLogs(clientset, dstPod, *namespace)
         exec.Command("kubectl", "delete", "pod", dstPod, "-n", *namespace).Run()
         log.Printf("Deleted data copy pod %s", dstPod)
+        getPodLogs(clientset, srcPod, *namespace)
+        exec.Command("kubectl", "delete", "pod", srcPod, "-n", *namespace).Run()
+        log.Printf("Deleted data copy pod %s", srcPod)
         deletePVC(clientset, tmpPVC, *namespace)
         scaleWorkload(clientset, ownerKind, ownerName, *namespace, 1)
 
@@ -234,7 +235,7 @@ spec:
         echo "%s:%s" | chpasswd &&
         sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config &&
         ssh-keygen -A &&
-        /usr/sbin/sshd -D -p %d
+        /usr/sbin/sshd -D -e -p %d
     volumeMounts:
     - name: src-volume
       mountPath: /mnt/data
@@ -263,6 +264,7 @@ func startDestPod(pvc, namespace, podName, srcPod string, bwLimit int, sshPort i
                 log.Fatalf("Error getting IP of source pod %s: %v", srcPod, err)
         }
 
+        // sshpass -p %s rsync -aHAXvzc --bwlimit=%d --progress -e "ssh -p %d -o StrictHostKeyChecking=no" %s@%s:/mnt/data/ /mnt/data/
         podYAML := fmt.Sprintf(`
 apiVersion: v1
 kind: Pod
@@ -277,7 +279,7 @@ spec:
     args:
       - |
         apk add --no-cache rsync openssh-client sshpass &&
-        sshpass -p %s rsync -aHAXv --bwlimit=%d --progress -e "ssh -p %d -o StrictHostKeyChecking=no" %s@%s:/mnt/data/ /mnt/data/
+        sshpass -p %s rsync -aHAXSv --bwlimit=%d --progress -e "ssh -p %d -o StrictHostKeyChecking=no" %s@%s:/mnt/data/ /mnt/data/
     volumeMounts:
     - name: dst-volume
       mountPath: /mnt/data
@@ -324,4 +326,19 @@ func scaleWorkload(clientset *kubernetes.Clientset, kind, name, namespace string
         default:
                 log.Printf("Unsupported workload type: %s", kind)
         }
+}
+
+func getPodLogs(clientset *kubernetes.Clientset, podName string, namespace string) error {
+
+        cmd := exec.Command("kubectl", "logs", podName, "-n", namespace)
+
+        // Configure stdout and stderr to go to the program's stdout and stderr
+        cmd.Stdout = os.Stdout
+        cmd.Stderr = os.Stderr
+
+        err := cmd.Run()
+        if err != nil {
+                return fmt.Errorf("error running kubectl logs: %v", err)
+        }
+        return nil
 }
